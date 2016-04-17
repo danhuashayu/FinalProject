@@ -1,0 +1,630 @@
+---
+title: "ISU Analysis"
+output: html_document
+---
+
+# Background
+
+```{r}
+#setwd("C:/Users/chrys/Documents/Harvard/2015 Spring/BIO 260/finalproject")
+library(dplyr)
+library(readr)
+library(tidyr)
+library(stringr)
+#install.packages("rvest")
+library(rvest)
+
+```
+
+You can also embed plots, for example:
+
+```{r}
+#to create a list of website to scrape data from
+#season_start_year <- c(2008,2009,2010,2011,2012,2013,2014,2015)
+program_type <- c("to", "sp", "fs","fd","sd")
+category <- c("m","l","p","d")
+combination <- expand.grid( season_start_year=seq(2008,2015,by=1), program_type=c("to"), category = category)
+combination <-bind_rows(combination, expand.grid( season_start_year=seq(2011,2015,by=1), program_type=c( "sp", "fs"), category = c("m","l","p")))
+combination <-bind_rows(combination, expand.grid( season_start_year=seq(2011,2015,by=1), program_type=c ("fd","sd"), category = "d"))
+#"http://www.isuresults.com/isujsstat/sb2015-16/sbtsmto.htm"
+html <- paste0( "http://www.isuresults.com/isujsstat/sb",as.character(combination$season_start_year))
+html <- paste0(html,"-")
+html <- paste0(html,str_sub(as.character(combination$season_start_year+1), start = -2))
+html <- paste0(html, "/sbts")
+html <- paste0(html, combination$category)
+html <- paste0(html, combination$program_type)
+html <- paste0(html, ".htm")
+html <-data.frame(html)
+
+combination <-bind_cols(combination,html)
+
+#only have data til 2011 for short program and free skating
+
+```
+
+
+```{r, echo=FALSE}
+
+```
+
+Function fix_name_column format the names correctly
+
+```{r}
+
+fix_name_column <-function(name_list, expr){
+  
+  g <- gregexpr(expr, name_list, fixed=TRUE)
+  last_name_pos = list()
+  
+  for(i in 1:length(g))
+  {
+    loc <- g[[i]]
+    last_name_pos[length(last_name_pos)+1] <- loc[length(loc)] +1
+    
+  }
+  
+  last_name_pos.df <-do.call(rbind.data.frame, last_name_pos)
+  
+  name.df <- data.frame(name_list)
+  colnames(last_name_pos.df) <- c("last_name_pos")
+  colnames(name.df) <- c("name")
+  name.df <-bind_cols(name.df,last_name_pos.df)
+
+  name.df <-
+    name.df %>%
+    mutate(first_name = str_sub(name,start= 1, end = last_name_pos-2),last_name=str_sub(name,last_name_pos )) %>%
+    select(first_name, last_name)
+  
+  return (name.df)
+}
+```
+
+```{r}
+get_table_from_html <- function(html.str, tableid){
+  ISU.html <- read_html(html.str)
+  raw.df <- 
+    ISU.html  %>%
+    html_nodes("table") %>%
+    .[[tableid]] %>%
+    html_table(fill= TRUE)
+  return(raw.df)
+}
+```
+
+We download data by function below.
+```{r}
+#Season Best raw data
+get_season_best <- function(ssy, c, st, html.str){
+
+  raw.df <-get_table_from_html(html.str, 1)
+  #clean up data
+  #1. only include columns with data
+  #2. exclude irrevelatent rows (ex. timestampe) in the table
+  cleaned.df <- 
+    raw.df[,1:6] %>% 
+    filter(!is.na(X3)) 
+  
+  colnames(cleaned.df) <-c("rank","score","name","country","event","date")
+
+  if (c =="m"|c=="l"){
+    cleaned.df <-bind_cols(cleaned.df,fix_name_column(cleaned.df$name, " "))
+  }
+  else {
+    cleaned.df <-
+    cleaned.df %>%
+    mutate(name = str_replace(name," / ", "."))
+    skater.df <- fix_name_column(cleaned.df$name, ".")
+    colnames(skater.df) <-c("skater1", "skater2")
+    skater1.df  <- fix_name_column(skater.df$skater1, " ")
+    colnames(skater1.df) <-c("first_name_1", "last_name_1")
+    skater2.df  <- fix_name_column(skater.df$skater2, " ")
+    colnames(skater2.df) <-c("first_name_2", "last_name_2")
+    cleaned.df <-bind_cols(cleaned.df,skater1.df)
+    cleaned.df <-bind_cols(cleaned.df,skater2.df)
+    
+  }
+
+  #fix date
+  cleaned.df <-
+  cleaned.df %>%
+    mutate (date = as.Date(date, format="%d.%m.%Y"))  %>%
+    mutate (season_start_year = ssy, 
+            season_end_year = ssy+1, 
+            category = c,
+            program_type = st,
+            rank = as.integer(as.character(rank))
+            )
+  #select relevent columns
+  if (c =="m"|c=="l"){
+    cleaned.df <-
+    cleaned.df %>%
+      select (
+              rank,
+               score ,
+               first_name,
+               last_name ,
+               country ,
+               event ,
+               date,
+               season_start_year,
+               season_end_year,
+               category,
+               program_type
+              ) 
+  }
+  else{
+        cleaned.df <-
+    cleaned.df %>%
+      select (
+              rank,
+               score ,
+               first_name_1,
+               last_name_1,
+               first_name_2,
+               last_name_2,
+               country ,
+               event ,
+               date,
+               season_start_year,
+               season_end_year,
+               category,
+               program_type
+              ) 
+    
+    
+  }
+  return (cleaned.df)
+}
+
+```
+
+
+```{r}
+SeasonBestScoreSingle.df <- 
+  data.frame(rank= integer(),
+             score = double(),
+             first_name= character(),
+             last_name = character(),
+             country = character(),
+             event = character(),
+             date=as.Date(character()),
+             season_start_year= integer(),
+             season_end_year= integer(),
+             category = character(),
+             program_type= character()
+             ) 
+SeasonBestScoreDouble.df <- 
+  data.frame(rank= integer(),
+             score = double(),
+             first_name_1= character(),
+             last_name_1 = character(),
+             first_name_2= character(),
+             last_name_2 = character(),
+             country = character(),
+             event = character(),
+             date=as.Date(character()),
+             season_start_year= integer(),
+             season_end_year= integer(),
+             category = character(),
+             program_type= character()
+             ) 
+for(i in 1:nrow(combination)){
+  category <- as.character(combination[i,]$category)
+  ssy <- as.integer(combination[i,]$season_start_year)
+  program_type <- as.character(combination[i,]$program_type)
+  html.str <-as.character(combination[i,]$html)
+  
+  new.df<-get_season_best(
+    ssy, 
+    category, 
+    program_type,
+    html.str
+    )
+  if (category =="m"|category =="l")
+  {
+    SeasonBestScoreSingle.df <- bind_rows(SeasonBestScoreSingle.df,new.df)
+  }
+  else{
+    
+    SeasonBestScoreDouble.df <- bind_rows(SeasonBestScoreDouble.df,new.df)
+  }
+ 
+}
+
+
+
+```
+
+#ice dance is changed from 2011 to different program_type
+FC start from 2005
+EC start from 2005
+WTT only has data on 2009
+gpf start from 2005
+```{r}
+#to create a list of website to scrape data from
+
+event_code <- c("fc","wc","ec","gpf")
+#after reform of ice dance
+
+#event_description <-"
+#fc  Four Continents Championships
+#"
+#event_description <- read_csv(event_description, trim_ws = TRUE)
+
+combination_event_result.df <- expand.grid( season_start_year= seq(2005,2015,by=1), event_code= c("fc","wc","ec"), program_id = seq(1,6,by=1))
+
+combination_event_result.df <- bind_rows(combination_event_result.df,expand.grid( season_start_year= seq(2005,2014,by=1), event_code= c("gpf"), program_id = seq(1,6,by=1)))
+
+
+#combination_event_result.df <-bind_rows(combination_event_result.df, expand.grid( season_start_year= seq(2005,2010,by=1), event_code= event_code,program_id = seq(1,9,by=1)))
+
+
+
+#"http://www.isuresults.com/results/wc2004/SEG001.HTM"
+combination_event_result.df <-
+combination_event_result.df %>%
+  mutate (html = paste0( "http://www.isuresults.com/results/",event_code) ) %>%
+  #mutate (html = paste0(html,"/")   ) %>%
+  mutate (html = ifelse(event_code == "gpf",  paste0(html,paste0(
+  str_sub(as.character(season_start_year), start = -2),
+  str_sub(as.character(season_start_year+1), start = -2)
+)) ,  
+  paste0(html,as.character(season_start_year)) )   ) %>%
+  mutate (html = paste0(html,"/SEG00")   ) %>%
+  mutate (html = paste0(html,as.character(program_id))   ) %>%
+  mutate (html = paste0(html,".HTM")   ) 
+
+
+ 
+```
+
+
+
+We download data by function below.
+```{r}
+#event result raw data
+#ssy = 2011
+# ec= "fc"
+get_event_result <- function(ssy, ec, html.str){
+  #i <- 1
+  #html.str <- as.character(combination_event_result.df[i,]$html)
+  
+  ISU.html <- read_html(html.str)
+  
+  #load data
+  program_description <-  ISU.html  %>%
+    html_nodes(".caption2") %>%
+    html_text()
+  c <- strsplit(program_description, " - ")[[1]]  [1]
+  program_type <- strsplit(program_description, " - ")[[1]]  [2]
+  
+  raw.df <- 
+    ISU.html  %>%
+    html_nodes("table") %>%
+    .[[3]] %>%
+    html_table(fill= TRUE)
+  
+  
+  #Clean up data
+  cleaned.df <- raw.df
+  if (ncol(cleaned.df) ==15) {
+    colnames(cleaned.df) <- c("PI","Q","name","country","TSS","TES", "emptyCol", "PCS","SS","TR","PE","CH","IN","Ded","StN")
+  }
+  else if (ncol(cleaned.df) ==14) {
+    colnames(cleaned.df) <- c("PI","name","country","TSS","TES", "emptyCol", "PCS","SS","TR","PE","CH","IN","Ded","StN")
+    cleaned.df <- 
+      cleaned.df %>%
+      mutate(Q=NA)
+  }
+  
+  cleaned.df <-
+    cleaned.df %>%
+    select(-emptyCol) %>%
+    mutate(category = c, program_type = program_type, season_start_year = ssy, season_end_year = ssy +1, event_code = ec )
+  
+  if (c =="Men"|c=="Ladies"){
+    cleaned.df <-bind_cols(cleaned.df,fix_name_column(cleaned.df$name, " "))
+  }
+  else {
+    cleaned.df <-
+    cleaned.df %>%
+    mutate(name = str_replace(name," / ", "."))
+    skater.df <- fix_name_column(cleaned.df$name, ".")
+    colnames(skater.df) <-c("skater1", "skater2")
+    skater1.df  <- fix_name_column(skater.df$skater1, " ")
+    colnames(skater1.df) <-c("first_name_1", "last_name_1")
+    skater2.df  <- fix_name_column(skater.df$skater2, " ")
+    colnames(skater2.df) <-c("first_name_2", "last_name_2")
+    cleaned.df <-bind_cols(cleaned.df,skater1.df)
+    cleaned.df <-bind_cols(cleaned.df,skater2.df)
+    
+  }
+
+  cleaned.df <-
+  cleaned.df %>%
+    mutate(
+             PI = as.integer(PI) ,
+             TSS = as.double(TSS) ,
+             TES = as.double(TES) ,
+             PCS = as.double(PCS) ,
+             SS = as.double(SS) ,
+             TR = as.double(TR) ,
+             PE = as.double(PE) ,
+             CH = as.double(CH) ,
+             IN = as.double(IN) ,
+             Ded = as.double(Ded) 
+      
+    ) 
+  
+    #select relevent columns
+  if (c =="Men"|c=="Ladies"){
+    cleaned.df <-
+    cleaned.df %>%
+    select (
+            PI ,
+             first_name,
+             last_name ,
+             country ,
+             TSS,
+             TES,
+             PCS,
+             SS,
+             TR,
+             PE,
+             CH,
+             IN,
+             Ded,
+             StN ,
+             Q,
+             event_code,
+             season_start_year,
+             season_end_year,
+             category,
+             program_type
+            
+            ) 
+  }
+  else{
+    cleaned.df <-
+    cleaned.df %>%
+    select (
+            PI ,
+             first_name_1,
+             last_name_1 ,
+             first_name_2,
+             last_name_2 ,
+             country ,
+             TSS,
+             TES,
+             PCS,
+             SS,
+             TR,
+             PE,
+             CH,
+             IN,
+             Ded,
+             StN ,
+             Q,
+             event_code,
+             season_start_year,
+             season_end_year,
+             category,
+             program_type
+            
+            )     
+    
+  }
+  return(cleaned.df)
+}
+```
+
+
+```{r}
+EventResultSingle.df <- 
+  data.frame(PI= integer(),
+             first_name = character(),
+             last_name = character(),
+             country = character(),
+             TSS = double(),
+             TES = double(),
+             PCS = double(),
+             SS = double(),
+             TR = double(),
+             PE = double(),
+             CH = double(),
+             IN = double(),
+             Ded = double(),
+             StN = character(),
+             Q = character(),
+             event_code = character(),
+             season_start_year= integer(),
+             season_end_year= integer(),
+             category = character(),
+             program_type= character()
+             ) 
+EventResultDouble.df <- 
+  data.frame(PI= integer(),
+             first_name_1 = character(),
+             last_name_1 = character(),
+             first_name_2 = character(),
+             last_name_2 = character(),
+             country = character(),
+             TSS = double(),
+             TES = double(),
+             PCS = double(),
+             SS = double(),
+             TR = double(),
+             PE = double(),
+             CH = double(),
+             IN = double(),
+             Ded = double(),
+             StN = character(),
+             Q = character(),
+             event_code = character(),
+             season_start_year= integer(),
+             season_end_year= integer(),
+             category = character(),
+             program_type= character()
+             ) 
+for(i in 1:nrow(combination_event_result.df)){
+
+  html.str <- as.character(combination_event_result.df[i,]$html)
+  ssy <-  as.integer(combination_event_result.df[i,]$season_start_year)
+  ec <-as.character(combination_event_result.df[i,]$event_code)
+  
+  new.df<-get_event_result(
+    ssy , ec, html.str
+    )
+  if (as.integer(combination_event_result.df[i,]$program_id)<5){
+    EventResultSingle.df <- bind_rows(EventResultSingle.df,new.df)    
+  }
+  else {
+    EventResultDouble.df <- bind_rows(EventResultDouble.df,new.df)
+  }
+  
+  
+}
+
+
+  
+```
+
+```{r}
+
+get_value_from_html_by_id <- function(ISU.html, id.str){
+ 
+  path <-'//*[@id="'
+  path <-paste0(path,id.str)
+  path <-paste0(path,'"]')
+  value <- ISU.html%>% 
+  html_nodes(xpath = path) %>%
+  html_text()
+  return(value)
+}
+get_value_from_html_by_class <- function(ISU.html, class.str){
+
+  criteria <-paste0(".",class.str)
+  value <- ISU.html  %>%
+        html_nodes(criteria) %>%
+        html_text()
+  return(value)
+}
+
+skaterInfoHTMLformat1.df <- read_csv1("SkaterInfoHTMLformat1.csv", col_names=TRUE)
+skaterInfoHTMLformat2.df <- read_csv("SkaterInfoHTMLformat2.csv", col_names=TRUE)
+
+Skater.df <- 
+  data.frame(
+            name = character(),
+            country = character(),
+            dob = as.Date(character()),
+            pob = character(),
+            height = integer(),
+            hometown = character(),
+            occupation = character(),
+            hobbies = character(),
+            start_career = integer(),
+            club_name = character(),
+            coach = character(),
+            choreographer = character(),
+            former_coach = character(),
+            practice_on_ice_low_season = double(),
+            low_season_practice_place = character(),
+            practice_on_ice_high_season = double(),
+            high_season_practice_place = character(),
+            html = character()
+
+             )
+
+#load data of skate
+load_skater_info<-function(){
+  skaterMainHTML <- c("http://www.isuresults.com/bios/fsbiosmen.htm")
+  
+  for (j in 1:length(skaterMainHTML)){
+  #html.str<-"http://www.isuresults.com/bios/fsbiosladies.htm"
+    html.str<-skaterMainHTML[j]
+    #raw.df <-get_table_from_html(html.str, 1)
+    ISU.html <- read_html(html.str)
+    
+    url.list <- ISU.html  %>% 
+       html_nodes("a") %>% 
+      html_attr("href")
+    url.list <-  url.list[1:(length(url.list)-4)]
+    url.list <-paste0("http://www.isuresults.com",url.list)  
+    
+    for( i in 1: length(url.list)){
+     
+      html.str<-url.list[i]
+      #format 1
+      #html.str <- "http://www.isuresults.com/bios/isufs00013644.htm"
+      #format 2
+      #html.str<-"http://www.isuresults.com/bios/isufs00005472.htm"
+      ISU.html <- read_html(html.str)
+      
+      title <- ISU.html  %>% 
+       html_nodes("title") %>% 
+      html_text()
+      
+      #format 1
+      if (format != "Crystal Report Viewer") {
+        new.df <- skaterInfoHTMLformat1.df 
+        
+         new.df <- new.df %>%
+          mutate(data = mapply(get_value_from_html_by_id, ISU.html, ID)) %>%
+          select (ColumnName, data) %>%
+        mutate(data= ifelse(data == "character(0)", NA, data))
+      }
+      #format 2
+      else{
+        new.df <- skaterInfoHTMLformat2.df
+        
+         new.df <- new.df %>%
+          mutate(data = mapply(get_value_from_html_by_class, ISU.html, ID)) %>%
+          select (ColumnName, data) %>%
+        mutate(data= ifelse(data == "character(0)", NA, data))
+      }
+      
+        
+        
+        n <- new.df$ColumnName
+        new.df <-as.data.frame(t(new.df[,-1]))
+        colnames(new.df) <- n
+      
+      new.df <-
+        new.df %>%
+        mutate(            
+          
+                name = as.character(name),
+                country = as.character(country),
+                dob =  as.Date(as.character(dob), format="%d.%m.%Y"),
+                pob = as.character(pob),
+                height = as.integer(height),
+                hometown = as.character(hometown),
+                occupation = as.character(occupation),
+                hobbies = as.character(hobbies),
+                start_career = as.integer(start_career),
+                club_name = as.character(club_name),
+                coach = as.character(coach),
+                choreographer = as.character(choreographer),
+                former_coach = as.character(former_coach),
+                practice_on_ice_low_season = as.double(practice_on_ice_low_season),
+                low_season_practice_place = as.character(low_season_practice_place),
+                practice_on_ice_high_season = as.double(practice_on_ice_high_season),
+                high_season_practice_place = as.character(high_season_practice_place),
+                html = html.str
+    
+               ) 
+      
+      Skater.df<- bind_rows(Skater.df,new.df)
+    }
+    
+  }
+}
+#Skater.df<- bind_rows(Skater.df,SkaterLadies.df)
+#write.table(Skater.df, "Skater.txt", quote =FALSE, sep = "|", row.names = FALSE ,col.names = TRUE)
+
+
+Skater.df <- read_delim("Skater.txt", delim="|", col_names=TRUE)
+
+
+```
